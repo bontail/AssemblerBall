@@ -3,6 +3,8 @@ enable_language(ASM)
 project(AssemblerBall ASM)
 set(CMAKE_OSX_ARCHITECTURES "arm64")
 
+#SET(CMAKE_ASM_FLAGS  "${CMAKE_ASM_FLAGS} -fsanitize=address")
+
 add_executable(AssemblerBall
         src/main.s
 )

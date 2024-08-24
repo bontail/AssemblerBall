@@ -11,11 +11,15 @@
 git clone https://github.com/bontail/AssemblerBall.git
 ```
 
+To run the game, you will need to have SDL2 library, Python, Cmake installed on your system.<br>
+You can install SDL2 library using your system's package manager or by downloading them from their respective websites.<br>
+
 ### Run
 
-To run the game, you will need to have SDL2 library installed on your system.<br>
-You can install this library using your system's package manager or by downloading them from their respective websites.<br>
-Also required Cmake.
+```shell
+make start_server
+```
+Open a second terminal window.
 
 ```shell
 mkdir build && cd build

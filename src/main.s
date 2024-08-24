@@ -2,7 +2,6 @@
 .align 2
 
 
-
 SDL_INIT_EVERYTHING = 62001
 SDL_WINDOWPOS_CENTERED = 805240832
 SDL_WINDOW_SHOWN = 4
@@ -13,30 +12,35 @@ SDL_QUIT = 256
 SDL_KEYDOWN = 768
 SDL_SCANCODE_W = 26
 SDL_SCANCODE_S = 22
+SDL_SCANCODE_SPACE = 44
 
-
-
-WINDOW_W = 800
-WINDOW_H = 600
+WINDOW_W = 1100
+WINDOW_H = 700
 
 BALL_W = 10
 BALL_H = 10
 BALL_X = (WINDOW_W - BALL_W) / 2
 BALL_Y = (WINDOW_H - BALL_H) / 2
+BALL_SPEED_X = 7
+BALL_SPEED_Y = 7
 
-USER_W = 20
-USER_H = 100
+PLATFORM_DEFAULT_W = 20
+PLATFORM_DEFAULT_H = 100
+PLATFORM_DEFAULT_Y = (WINDOW_H - PLATFORM_DEFAULT_H) / 2
+
 USER_X = 0
-USER_Y = 0
 USER_MIN_Y = 0
-USER_MAX_Y = WINDOW_H - USER_H
+USER_MAX_Y = WINDOW_H - PLATFORM_DEFAULT_H
 
-COMPUTER_W = 20
-COMPUTER_H = 100
-COMPUTER_X = WINDOW_W - COMPUTER_W
-COMPUTER_Y = (WINDOW_H - COMPUTER_H) / 2
-COMPUTER_MIN_Y = 0
-COMPUTER_MAX_Y = WINDOW_H - COMPUTER_H
+OPPONENT_X = WINDOW_W - PLATFORM_DEFAULT_W
+OPPONENT_MIN_Y = 0
+OPPONENT_MAX_Y = WINDOW_H - PLATFORM_DEFAULT_H
+
+STATE_MENU = 0
+STATE_GAME = 1
+
+AF_INET = 2
+SOCK_DGRAM = 2
 
 
 
@@ -74,71 +78,279 @@ COMPUTER_MAX_Y = WINDOW_H - COMPUTER_H
 .endmacro
 
 
-
-quit_app:
-    MOV     X0, 0
-    storeVar g_isRunning, X0
-    B end_while_isRunning
-
-
-switch_keydowns:
-    LDR     W0, [SP, 16]
-    
-    MOV     W1, SDL_SCANCODE_W
-    CMP     W0, W1
-    B.eq    set_direction_up
-
-    MOV     W1, SDL_SCANCODE_S
-    CMP     W0, W1
-    B.eq    set_direction_down
-
-    B end_while_isRunning
-
-set_direction_up:
-    MOV     W7, -1
-    storeVar g_userPlatformDirection, W7
-    B end_while_isRunning
-
-set_direction_down:
-    MOV     W1, 1
-    storeVar g_userPlatformDirection, W1
-    B end_while_isRunning
+.MACRO incrVar, var, reg
+    loadVar \var, \reg
+    ADD \reg, \reg, 1
+    storeVar \var, \reg
+.endmacro
 
 
 
-_main: 
+#include "render.s"
+#include "move.s"
+
+
+// print SDL error
+print_error:
+    BL      _SDL_GetError
+    SUB     SP, SP, 16
+    STR     X0, [SP]
+    adrpVar errorMessage, X0
+    BL      _printf
+
+    // exit app
+    mov     X0, 1
+    mov     X16, 1
+    svc     0
+
+
+// set windowTitle with format "{userScore} AssemblerBall {opponentScore}\0"
+update_window_title_text:
     storeFunctionsRegisters
-    
-    BL      init
+
+    loadVar userScore, W0
+    MOV     X1, 32 // space
+    LSL     X1, X1, 8
+    ADD     X0, X0, X1
+    storeVar windowTitle, X0
+    loadVar textWindowTitleFirst, X0
+    adrpVar windowTitle, X8
+    ADD     X8, X8, 2
+    STR     X0, [X8]
+
+    MOV     X0, 32 // space
+    loadVar opponentScore, W1
+    LSL     X1, X1, 8
+    ADD     X0, X0, X1
+    LSL     X0, X0, 40
+    loadVar textWindowTitleSecond, X1
+    LSL     X1, X1, 24
+    LSR     X1, X1, 24
+    ADD     X0, X0, X1
+    adrpVar windowTitle, X8
+    ADD     X8, X8, 10
+    STR     X0, [X8]
+
+    loadFunctionsRegisters
+    RET
+
+
+// call update_window_title_text
+// call _SDL_SetWindowTitle
+update_window_title:
+    storeFunctionsRegisters
+
+    BL      update_window_title_text
+
+    loadVar window, X0
+    adrpVar windowTitle, X1
+    BL      _SDL_SetWindowTitle
+
+    loadFunctionsRegisters
+    RET
+
+
+// set default value to game vars
+reset_values:
+    storeFunctionsRegisters
+
+    MOV     W0, STATE_MENU
+    storeVar state, W0
+
+    MOV     W0, PLATFORM_DEFAULT_Y
+    storeVar opponentPlatformY, W0
+    storeVar userPlatformY, W0
+
+    MOV     W0, 48
+    storeVar userScore, W0
+    storeVar opponentScore, W0
+
+    MOV     W0, BALL_SPEED_X
+    storeVar ballSpeedX, W0
+
+    MOV     W0, BALL_SPEED_Y
+    storeVar ballSpeedY, W0
+
+    MOV     W0, BALL_X
+    storeVar ballX, W0
+
+    MOV     W0, BALL_Y
+    storeVar ballY, W0
+
+    MOV     W0, 0
+    storeVar userPlatformDirection, W0
+    storeVar opponentPlatformDirection, W0
+
+    BL      update_window_title
+
+    loadFunctionsRegisters
+    RET
+
+
+// start function with game loop
+_main:
+    storeFunctionsRegisters
+
+// init library and global vars
+init:
+    MOV     X0, 0
+    BL      _time
+    BL      _srand
+
+// _SDL_Init
+    MOV     X0, SDL_INIT_EVERYTHING
+    BL      _SDL_Init
+    CMP     X0, 0
+    B.ne    print_error
+
+// _SDL_CreateWindow
+    BL      update_window_title_text
+    adrpVar windowTitle, X0
+    MOV     X1, SDL_WINDOWPOS_CENTERED
+    MOV     X2, SDL_WINDOWPOS_CENTERED
+    MOV     X3, WINDOW_W
+    MOV     X4, WINDOW_H
+    MOV     X5, SDL_WINDOW_SHOWN
+    BL      _SDL_CreateWindow
+    storeVar window, X0
+    CMP     X0, 0
+    B.eq    print_error
+
+// _SDL_CreateRenderer
+    MOV     X1, -1
+    MOV     X2, SDL_RENDERER_PRESENTVSYNC
+    BL      _SDL_CreateRenderer
+    storeVar renderer, X0
+    CMP     X0, 0
+    B.eq    print_error
+
+    BL      reset_values
+
     SUB     SP, SP, SDL_Event_stackzie
 
+init_socket:
+// socket
+    MOV     X0, AF_INET
+    MOV     X1, SOCK_DGRAM
+    MOV     X2, 0
+    BL      _socket
+    MOV     X1, 0
+    CMP     X0, X1
+    B.lt    print_error
+    storeVar socketRefClient, W0
+
+// socket
+    MOV     X0, AF_INET
+    MOV     X1, SOCK_DGRAM
+    MOV     X2, 0
+    BL      _socket
+    MOV     X1, 0
+    CMP     X0, X1
+    B.lt    print_error
+    storeVar socketRefServer, W0
+
+// bind
+    adrpVar socketServerAddress, X1
+    loadVar socketAddressLen, W2
+    BL      _bind
+    MOV     X1, 0
+    CMP     X0, X1
+    B.lt    print_error
+
+// main game loop
 while_isRunning:
     MOV     X0, SP
     BL      _SDL_PollEvent
     CMP     X0, 0
-    B.eq    end_while_isRunning
+    B.eq    swith_states
+
+switch_events:
     LDR     W0, [SP]
 
+cmp_quit_event:
     MOV     W1, SDL_QUIT
     CMP     W0, W1
-    B.eq    quit_app
+    B.ne    cmp_keydown_event
 
+quit_app:
+    MOV     X0, 0
+    storeVar isRunning, X0
+    B swith_states
+
+cmp_keydown_event:
     MOV     W1, SDL_KEYDOWN
     CMP     W0, W1
-    B.eq    switch_keydowns
+    B.ne    swith_states
 
-end_while_isRunning:
-    BL      render
+switch_keydowns:
+    LDR     W0, [SP, 16]
+
+cmp_user_up:
+    MOV     W1, SDL_SCANCODE_W
+    CMP     W0, W1
+    B.ne    cmp_user_down
+    MOV     W1, -1
+    storeVar userPlatformDirection, W1
+
+cmp_user_down:
+    MOV     W1, SDL_SCANCODE_S
+    CMP     W0, W1
+    B.ne    cmp_change_state_to_game
+    MOV     W1, 1
+    storeVar userPlatformDirection, W1
+
+cmp_change_state_to_game:
+    MOV     W1, SDL_SCANCODE_SPACE
+    CMP     W0, W1
+    B.ne    swith_states
+    MOV     W1, STATE_GAME
+    storeVar state, W1
+
+swith_states:
+    MOV     W0, STATE_MENU
+    loadVar state, W1
+    CMP     W0, W1
+    B.ne    cmp_state_find
+    BL      render_menu
+
+cmp_state_find:
+    MOV     W0, STATE_GAME
+    loadVar state, W1
+    CMP     W0, W1
+    B.ne    end_while_isRunning
+
+send_direction:
+    loadVar socketRefClient, W0
+    adrpVar userPlatformDirection, X1
+    MOV     X2, 4 // buffer size
+    MOV     X3, 0
+    adrpVar socketClientAddress, X4
+    loadVar socketAddressLen, W5
+    BL      _sendto
+
+rec_direction:
+    loadVar socketRefServer, W0
+    adrpVar opponentPlatformDirection, X1
+    MOV     X2, 4 // buffer size
+    MOV     X3, 0
+    adrpVar socketServerAddress, X4
+    adrpVar socketAddressLen, X5
+    BL      _recvfrom
+
+make_new_frame:
+    BL      render_game
     BL      move
 
-    loadVar g_isRunning, X0
-    CMP     X0, 1      
-    B.eq    while_isRunning  
+end_while_isRunning:
+    loadVar isRunning, W0
+    CMP     W0, 1
+    B.eq    while_isRunning
 
-    loadVar g_renderer, X0
+end_main:
+    loadVar renderer, X0
     BL      _SDL_DestroyRenderer
 
-    loadVar g_window, X0
+    loadVar window, X0
     BL      _SDL_DestroyWindow
 
     BL      _SDL_Quit
@@ -150,288 +362,74 @@ end_while_isRunning:
 
 
 
-init:
-    storeFunctionsRegisters
 
-    MOV     X0, 0
-    BL      _time
-    BL      _srand
-
-    MOV     X0, SDL_INIT_EVERYTHING
-    BL      _SDL_Init
-    CMP     X0, 0
-    B.ne    print_error
-
-    ADR     X0, windowTitle
-    MOV     X1, SDL_WINDOWPOS_CENTERED
-    MOV     X2, SDL_WINDOWPOS_CENTERED
-    MOV     X3, WINDOW_W
-    MOV     X4, WINDOW_H
-    MOV     X5, SDL_WINDOW_SHOWN
-    BL      _SDL_CreateWindow
-    storeVar g_window, X0
-    CMP     X0, 0
-    B.eq    print_error
-
-    MOV     X1, -1
-    MOV     X2, SDL_RENDERER_PRESENTVSYNC
-    BL      _SDL_CreateRenderer
-    storeVar g_renderer, X0
-    CMP     X0, 0
-    B.eq    print_error
-
-    loadFunctionsRegisters
-    RET
-
-
-
-print_error:
-    BL      _SDL_GetError
-    SUB     SP, SP, 16
-    STR     X0, [SP]
-    adrpVar errorMessage, X0
-    BL      _printf
-
-    // exit app
-    mov     X0, 1
-    mov     X16, 1
-    svc     0           
-
-
-
-render:
-    storeFunctionsRegisters
-
-    loadVar g_renderer, X0
-    MOV     X1, 0
-    MOV     X2, 0
-    MOV     X3, 0
-    MOV     X4, 0
-    BL      _SDL_SetRenderDrawColor
-
-    loadVar g_renderer, X0
-    BL      _SDL_RenderClear
-
-render_ball:
-    loadVar g_renderer, X0
-    MOV     X1, 255
-    MOV     X2, 255
-    MOV     X3, 255
-    MOV     X4, 0
-    BL      _SDL_SetRenderDrawColor
-
-    loadVar g_renderer, X0
-    adrpVar g_ballX, X1
-    BL      _SDL_RenderFillRect
-
-render_user_platform:
-    loadVar g_renderer, X0
-    adrpVar g_userPlatformX, X1
-    BL      _SDL_RenderFillRect
-
-render_computer_platform:
-    loadVar g_renderer, X0
-    adrpVar g_computerPlatformX, X1
-    BL      _SDL_RenderFillRect
-
-render_end:
-    loadVar g_renderer, X0
-    BL      _SDL_RenderPresent
-
-    loadFunctionsRegisters
-    RET
-
-
-
-move:
-    storeFunctionsRegisters
-
-move_userPlatform:
-    loadVar g_userPlatformDirection, W0
-    MOV     W1, 0
-    storeVar g_userPlatformDirection, W1
-    CMP     W0, W1
-    B.eq    move_computerPlatform
-
-    loadVar g_platformSpeed, W1
-    MUL     W0, W0, W1
-    loadVar g_userPlatformY, W1
-    ADD     W0, W0, W1
-
-min_userPlatformY:
-    loadVar g_userPlatformMinY, W1
-    CMP     W0, W1
-    B.gt    max_userPlatformY
-    MOV     W0, W1
-
-max_userPlatformY:
-    loadVar g_userPlatformMaxY, W1
-    CMP     W0, W1
-    B.lt    store_userPlatformY
-    MOV     W0, W1
-
-store_userPlatformY:
-    storeVar g_userPlatformY, W0
-
-move_computerPlatform:
-    BL      _rand
-    MOV     W1, 3
-    AND     W0, W0, W1
-    SUB     W0, W0, 2
-    loadVar g_platformSpeed, W1
-    MUL     W0, W0, W1
-    loadVar g_computerPlatformY, W1
-    ADD     W0, W0, W1
-
-min_computerPlatformY:
-    loadVar g_computerPlatformMinY, W1
-    CMP     W0, W1
-    B.gt    max_computerPlatformY
-    MOV     W0, W1
-
-max_computerPlatformY:
-    loadVar g_computerPlatformMaxY, W1
-    CMP     W0, W1
-    B.lt    store_computerPlatformY
-    MOV     W0, W1
-
-store_computerPlatformY:
-    MOV     W3, W0
-    BL      _rand
-    MOV     W1, 667
-    AND     W0, W0, W1
-    MOV     W1, 10
-    CMP     W0, W1
-    B.ge    move_ball
-    storeVar g_computerPlatformY, W3
-
-move_ball:
-    loadVar g_ballSpeedX, W1
-    loadVar g_ballX, W0
-    ADD     W0, W0, W1
-    STR     W0, [X8]
-
-    loadVar g_ballSpeedY, W1
-    loadVar g_ballY, W0
-    ADD     W0, W0, W1
-    STR     W0, [X8]
-
-comparison_ballX:
-    loadVar g_ballX, W0
-    loadVar g_ballW, W1
-    LDR     W1, [X8]
-    ADD     W1, W0, W1
-    
-    MOV     W2, WINDOW_W
-    CMP     W2, W1
-    B.le    invert_speed_x
-
-    MOV     W2, 0
-    CMP     W1, W2
-    B.le    invert_speed_x
-
-check_collision_with_user_platform:
-    adrpVar g_ballX, X0
-    adrpVar g_userPlatformX, X1
-    BL      _SDL_HasIntersection
-    MOV     W1, 1
-    CMP     W0, W1
-    loadVar g_ballX, W0
-    MOV     W1, W0
-    loadVar g_userPlatformW, W2
-    B.eq    invert_speed_x
-
-check_collision_with_computer_platform:
-    adrpVar g_ballX, X0
-    adrpVar g_computerPlatformX, X1
-    BL      _SDL_HasIntersection
-    MOV     X1, 0
-    CMP     X0, X1
-    loadVar g_ballX, W0
-    loadVar g_ballW, W1
-    ADD     W1, W1, W0
-    loadVar g_computerPlatformX, W2
-    B.eq    comparison_ballY
-
-invert_speed_x:
-    BL      _invert_speed_x_function
-
-comparison_ballY:
-    loadVar g_ballY, W0
-    loadVar g_ballH, W1
-    ADD     W1, W0, W1
-
-    MOV     W2, WINDOW_H
-    CMP     W2, W1
-    B.le    invert_speed_y
-
-    MOV     W2, 0
-    CMP     W2, W1
-    B.lt    move_end
-
-invert_speed_y:    
-    BL      _invert_speed_y_function
-
-move_end:
-    loadFunctionsRegisters
-    RET
-
-
-
-.MACRO invert_speed pos, speed
-//  W0 - Current position
-//  W1 - Absolute position
-//  W2 - Edge position
-    SUB     W1, W1, W2
-    SUB     W0, W0, W1
-    storeVar \pos, W0
-
-    loadVar \speed, W0
-    NEG     W0, W0
-    STR     W0, [X8]
-    RET
-.endmacro
-
-_invert_speed_x_function:
-    invert_speed g_ballX, g_ballSpeedX
-
-_invert_speed_y_function:
-    invert_speed g_ballY, g_ballSpeedY
-
-
-
-.text   
-errorMessage: .ascii  "SDL Error: %s\n"
-windowTitle: .ascii "AssemblerBall"
-
+.text
+errorMessage: .ascii  "SDL Error: %d\n"
+textWindowTitleFirst: .ascii "Assemble"
+textWindowTitleSecond: .ascii "rBall"
 
 
 .data
-g_window: .quad 0
-g_renderer: .quad 0
+windowTitle: .space 18
 
-g_ballX: .word BALL_X
-g_ballY: .word BALL_Y
-g_ballW: .word BALL_W
-g_ballH: .word BALL_H
-g_ballSpeedX: .word 7
-g_ballSpeedY: .word 7
 
-g_userPlatformX: .word USER_X
-g_userPlatformY: .word USER_Y
-g_userPlatformW: .word USER_W
-g_userPlatformH: .word USER_H
-g_userPlatformDirection: .word 0 // 1 = DOWN,  -1 = UP
-g_userPlatformMinY: .word USER_MIN_Y
-g_userPlatformMaxY: .word USER_MAX_Y
+window: .quad 0
+renderer: .quad 0
 
-g_computerPlatformX: .word COMPUTER_X
-g_computerPlatformY: .word COMPUTER_Y
-g_computerPlatformW: .word COMPUTER_W
-g_computerPlatformH: .word COMPUTER_H
-g_computerPlatformDirection: .word 0 // 1 = DOWN,  -1 = UP
-g_computerPlatformMinY: .word COMPUTER_MIN_Y
-g_computerPlatformMaxY: .word COMPUTER_MAX_Y
 
-g_platformSpeed: .word 20
-g_isRunning: .word 1
+ballX: .word BALL_X
+ballY: .word BALL_Y
+ballW: .word BALL_W
+ballH: .word BALL_H
+
+ballSpeedX: .word 7
+ballSpeedY: .word 7
+
+
+userPlatformX: .word USER_X
+userPlatformY: .word PLATFORM_DEFAULT_Y
+userPlatformW: .word PLATFORM_DEFAULT_W
+userPlatformH: .word PLATFORM_DEFAULT_H
+
+userScore: .word 48 // 48 == '1'
+userPlatformDirection: .word 0 // 1 = DOWN,  -1 = UP, 0 = NULL
+userPlatformMinY: .word USER_MIN_Y
+userPlatformMaxY: .word USER_MAX_Y
+
+
+opponentPlatformX: .word OPPONENT_X
+opponentPlatformY: .word PLATFORM_DEFAULT_Y
+opponentPlatformW: .word PLATFORM_DEFAULT_W
+opponentPlatformH: .word PLATFORM_DEFAULT_H
+
+opponentScore: .word 48
+opponentPlatformDirection: .word 0 // 1 = DOWN,  -1 = UP, 0 = NULL
+opponentPlatformMinY: .word OPPONENT_MIN_Y
+opponentPlatformMaxY: .word OPPONENT_MAX_Y
+
+
+platformSpeed: .word 20
+isRunning: .word 1
+state: .word STATE_MENU
+
+
+socketAddressLen: .word 16
+
+socketRefServer: .word 0
+socketServerAddress: .byte 0
+socketServerAddressPart2: .byte 2
+socketServerAddressPart3: .byte 173
+socketServerAddressPart4: .byte 156
+socketServerAddressPart5: .word 0
+socketServerAddressPart6: .quad 0
+
+
+socketRefClient: .word 0
+socketClientAddress: .byte 0
+socketServerClientPart2: .byte 2
+socketServerClientPart3: .byte 130
+socketServerClientPart4: .byte 53
+socketServerClientPart5: .byte 127
+socketServerClientPart6: .short 0
+socketServerClientPart7: .byte 1
+socketServerClientPart8: .quad 0
